@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, createStore } from './db.js';
@@ -13,13 +14,37 @@ const MIME = {
   '.json': 'application/json',
   '.webmanifest': 'application/manifest+json',
   '.svg': 'image/svg+xml',
+  '.jpg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
 };
+
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+const UPLOAD_NAME = /^[a-f0-9]{32}\.(jpg|png|webp)$/;
+
+// Decide the file type from the first bytes, not from what the client claims.
+export function sniffImage(buf) {
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+  if (buf.length > 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  return null;
+}
 
 // Shops known to need the shopper's login. Everything else defaults to public.
 const GATED = new Set(['zalando lounge', 'bestsecret']);
 export const shopType = (shop) => (GATED.has(String(shop).toLowerCase()) ? 'gated' : 'public');
 
-export function createApp(store) {
+export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'uploads' } = {}) {
+  const readRaw = async (req) => {
+    const chunks = [];
+    let size = 0;
+    for await (const c of req) {
+      size += c.length;
+      if (size > MAX_PHOTO_BYTES) throw Object.assign(new Error('Photo is too large (max 5 MB)'), { status: 413 });
+      chunks.push(c);
+    }
+    return Buffer.concat(chunks);
+  };
   const send = (res, status, body) => {
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(JSON.stringify(body));
@@ -77,6 +102,20 @@ export function createApp(store) {
             store.deleteItem(profile, itemId);
             return send(res, 204, {});
           }
+          if (sub === 'photo' && method === 'POST') {
+            const buf = await readRaw(req);
+            const ext = sniffImage(buf);
+            if (!ext) return send(res, 400, { error: 'Photo must be a JPEG, PNG or WebP image' });
+            await mkdir(uploadDir, { recursive: true });
+            const name = `${randomBytes(16).toString('hex')}.${ext}`;
+            await writeFile(join(uploadDir, name), buf);
+            const old = item.image_url;
+            store.setImage(profile, itemId, `/uploads/${name}`);
+            if (old && old.startsWith('/uploads/') && UPLOAD_NAME.test(old.slice(9))) {
+              await unlink(join(uploadDir, old.slice(9))).catch(() => {});
+            }
+            return send(res, 200, itemView(store.getItem(profile, itemId), store.listCodes(profile)));
+          }
           if (sub === 'sources' && method === 'POST') {
             const b = await readBody(req);
             if (!b.shop) return send(res, 400, { error: 'shop is required' });
@@ -118,6 +157,19 @@ export function createApp(store) {
         return send(res, 404, { error: 'not found' });
       }
 
+      // Uploaded photos (random unguessable names, fixed pattern, nothing else is served from here)
+      if (url.pathname.startsWith('/uploads/')) {
+        const name = url.pathname.slice('/uploads/'.length);
+        if (!UPLOAD_NAME.test(name)) return send(res, 404, { error: 'not found' });
+        try {
+          const data = await readFile(join(uploadDir, name));
+          res.writeHead(200, { 'content-type': MIME[extname(name)], 'cache-control': 'private, max-age=86400' });
+          return res.end(data);
+        } catch {
+          return send(res, 404, { error: 'not found' });
+        }
+      }
+
       // Static files
       const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
       const file = normalize(join(PUBLIC_DIR, rel));
@@ -130,7 +182,7 @@ export function createApp(store) {
         send(res, 404, { error: 'not found' });
       }
     } catch (e) {
-      send(res, 500, { error: String(e.message || e) });
+      send(res, e.status || 500, { error: String(e.message || e) });
     }
   };
 }

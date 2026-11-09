@@ -8,6 +8,27 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const money = (n, cur = 'CZK') => (n == null ? '–' : `${Number(n).toLocaleString('cs-CZ', { maximumFractionDigits: 2 })} ${cur}`);
 // Only allow http(s) links and images from user input.
 const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '');
+// Photos are either uploaded (served from /uploads/) or an older http(s) link.
+const imgUrl = (u) => (/^\/uploads\/[a-f0-9]{32}\.(jpg|png|webp)$/.test(u || '') ? u : safeUrl(u));
+
+// Shrink a photo before upload: phone photos are huge, and 900px is plenty for a card.
+async function shrinkPhoto(file) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 900 / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bmp.width * scale);
+  canvas.height = Math.round(bmp.height * scale);
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not read the photo'))), 'image/jpeg', 0.85));
+}
+
+async function uploadPhoto(itemId, file) {
+  const blob = await shrinkPhoto(file);
+  const res = await fetch(`/api/items/${itemId}/photo`, { method: 'POST', headers: { 'x-profile': profile() }, body: blob });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Photo upload failed');
+  return data;
+}
 
 function profile() {
   let p = localStorage.getItem('profile');
@@ -43,7 +64,7 @@ async function itemsView() {
   }
   view.innerHTML = items.map((i) => {
     const b = i.best;
-    const img = safeUrl(i.image_url);
+    const img = imgUrl(i.image_url);
     return `<a class="card item" href="#/item/${i.id}" style="text-decoration:none;color:inherit">
       ${img ? `<img class="thumb" src="${esc(img)}" alt="" loading="lazy">` : '<div class="thumb"></div>'}
       <div class="grow">
@@ -73,7 +94,7 @@ function trendSvg(history) {
 async function itemView(id) {
   const i = await api('GET', `/items/${id}`);
   titleEl.textContent = i.brand || 'Item';
-  const img = safeUrl(i.image_url);
+  const img = imgUrl(i.image_url);
   const rows = i.sources.map((s) => {
     const url = safeUrl(s.url);
     const checked = s.final != null;
@@ -94,6 +115,7 @@ async function itemView(id) {
 
   view.innerHTML = `
     ${img ? `<img class="hero" src="${esc(img)}" alt="">` : ''}
+    <label class="photo-btn">${img ? 'Change photo' : 'Add photo'}<input id="photo-input" type="file" accept="image/*" hidden></label>
     <div class="card">
       <div class="name">${esc(i.name)}${i.at_target ? '<span class="badge good">at or below target</span>' : ''}</div>
       <div class="mute">${esc([i.brand, i.color].filter(Boolean).join(' · '))}</div>
@@ -120,6 +142,12 @@ async function itemView(id) {
       <button class="link" data-act="del-item">Delete item</button>
     </div>`;
 
+  view.querySelector('#photo-input').onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try { await uploadPhoto(id, file); } catch (err) { alert(err.message); }
+    itemView(id);
+  };
   view.querySelector('#src-form').onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -154,7 +182,7 @@ function addView() {
     <div class="two"><div><label>Brand</label><input name="brand" placeholder="STAUD"></div>
     <div><label>Colour</label><input name="color" placeholder="black"></div></div>
     <label>Sizes available (optional)</label><input name="sizes" placeholder="XS, S, M">
-    <label>Photo link (optional)</label><input name="image_url" inputmode="url" placeholder="https://…">
+    <label>Photo (optional): take one or pick from your gallery or screenshots</label><input name="photo" type="file" accept="image/*">
     <h2>First shop</h2>
     <label>Shop</label><select name="shop">${SHOPS.map((s) => `<option>${esc(s)}</option>`).join('')}</select>
     <div class="two"><div><label>Price (CZK)</label><input name="price" inputmode="decimal"></div>
@@ -166,9 +194,13 @@ function addView() {
     const f = new FormData(e.target);
     const created = await api('POST', '/items', {
       name: f.get('name'), brand: f.get('brand') || null, color: f.get('color') || null,
-      sizes: f.get('sizes') || null, image_url: f.get('image_url') || null, target_price: num(f.get('target')),
+      sizes: f.get('sizes') || null, target_price: num(f.get('target')),
       sources: [{ shop: f.get('shop'), price: num(f.get('price')), url: f.get('url') || null }],
     });
+    const photo = f.get('photo');
+    if (photo && photo.size) {
+      try { await uploadPhoto(created.id, photo); } catch (err) { alert(`Item saved, but the photo failed: ${err.message}`); }
+    }
     go(`#/item/${created.id}`);
   };
 }

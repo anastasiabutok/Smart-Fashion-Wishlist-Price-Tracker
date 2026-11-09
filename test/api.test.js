@@ -1,11 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { openDb, createStore } from '../src/db.js';
 import { createApp } from '../src/server.js';
 
 async function start() {
-  const server = http.createServer(createApp(createStore(openDb(':memory:'))));
+  const uploadDir = mkdtempSync(join(tmpdir(), 'pt-uploads-'));
+  const server = http.createServer(createApp(createStore(openDb(':memory:')), { uploadDir }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = async (method, path, profile, body) => {
@@ -67,5 +71,45 @@ test('profiles are isolated', async () => {
 test('missing profile header is rejected', async () => {
   const { server, call } = await start();
   assert.equal((await call('GET', '/api/items', '')).status, 400);
+  server.close();
+});
+
+// Smallest valid-looking PNG header + padding; the server only checks the first bytes.
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
+
+test('photo upload: stored, served back, replaced; fake images and other profiles rejected', async () => {
+  const { server, call } = await start();
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const created = await call('POST', '/api/items', 'nasta', { name: 'Sweater', sources: [{ shop: 'Zalando', price: 1000 }] });
+  const post = (profile, body) => fetch(`${base}/api/items/${created.json.id}/photo`, { method: 'POST', headers: { 'x-profile': profile }, body });
+
+  const bad = await post('nasta', Buffer.from('<script>alert(1)</script>'));
+  assert.equal(bad.status, 400);
+  assert.equal((await post('mama', PNG)).status, 404);
+
+  const ok = await post('nasta', PNG);
+  assert.equal(ok.status, 200);
+  const url = (await ok.json()).image_url;
+  assert.match(url, /^\/uploads\/[a-f0-9]{32}\.png$/);
+  const served = await fetch(base + url);
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get('content-type'), 'image/png');
+
+  const second = await (await post('nasta', PNG)).json();
+  assert.notEqual(second.image_url, url);
+  assert.equal((await fetch(base + url)).status, 404); // old file removed
+
+  assert.equal((await fetch(`${base}/uploads/..%2f..%2fetc%2fpasswd`)).status, 404);
+  server.close();
+});
+
+test('too large photo is rejected', async () => {
+  const { server, call } = await start();
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const created = await call('POST', '/api/items', 'nasta', { name: 'Coat' });
+  const big = Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024 + 10)]);
+  const res = await fetch(`${base}/api/items/${created.json.id}/photo`, { method: 'POST', headers: { 'x-profile': 'nasta' }, body: big }).catch(() => null);
+  // Either a clean 413, or the server cut the connection mid-upload; both mean it was refused.
+  assert.ok(res === null || res.status === 413);
   server.close();
 });

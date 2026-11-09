@@ -69,6 +69,9 @@ export function createStore(db) {
       q('UPDATE items SET name = COALESCE(?, name), target_price = ?, sizes = COALESCE(?, sizes), image_url = COALESCE(?, image_url) WHERE profile = ? AND id = ?')
         .run(i.name ?? null, i.target_price ?? null, i.sizes ?? null, i.image_url ?? null, profile, id);
     },
+    setImage(profile, id, imageUrl) {
+      q('UPDATE items SET image_url = ? WHERE profile = ? AND id = ?').run(imageUrl, profile, id);
+    },
     deleteItem(profile, id) {
       q('DELETE FROM items WHERE profile = ? AND id = ?').run(profile, id);
     },

@@ -160,8 +160,10 @@ async function itemView(id) {
     msg.textContent = 'Reading the page…';
     try {
       const r = await api('POST', `/items/${id}/sources/from-link`, { url });
+      const note = convertedFrom(r) ? ` Price ${convertedFrom(r)}.` : '';
       if (!r.price_found) alert('Shop added, but I could not read the price. Enter it by hand.');
-      else if (r.match.uncertain) alert(`Added, but please check it is the same item (${r.match.reasons.join(', ')}).`);
+      else if (r.match.uncertain) alert(`Added, but please check it is the same item (${r.match.reasons.join(', ')}).${note}`);
+      else if (note) alert(`Added.${note}`);
       itemView(id);
     } catch (err) { msg.textContent = `Could not add it (${err.message}). Use "Add a shop" below.`; }
   };
@@ -198,6 +200,8 @@ async function itemView(id) {
   };
 }
 
+const convertedFrom = (r) => (r.price != null && r.foreign_price != null ? `converted from ${money(r.foreign_price, r.foreign_currency)}` : '');
+
 function addView() {
   titleEl.textContent = 'Check item';
   view.innerHTML = `<form id="add" class="card">
@@ -231,7 +235,7 @@ function addView() {
       const img = view.querySelector('#fill-img');
       img.hidden = !fetchedImage; if (fetchedImage) img.src = safeUrl(fetchedImage);
       const missing = ['name', 'price', 'image_url'].filter((k) => !r[k]).map((k) => ({ name: 'name', price: 'price', image_url: 'photo' }[k]));
-      msg.textContent = missing.length ? `Filled in what I could. Please check: ${missing.join(', ')}.` : 'Filled in. Check it, then save.';
+      msg.textContent = missing.length ? `Filled in what I could. Please check: ${missing.join(', ')}.` : `Filled in${convertedFrom(r) ? ` (price ${convertedFrom(r)})` : ''}. Check it, then save.`;
     } catch (err) {
       msg.textContent = `Could not read that page (${err.message}). Fill it in by hand below.`;
     }
@@ -275,7 +279,7 @@ function importView() {
         if (!r.name) throw new Error('no product found');
         const created = await api('POST', '/items', { name: r.name, brand: r.brand, color: r.color, sizes: r.sizes, image_url: r.image_url, sources: [{ shop: r.shop || 'Other', price: r.price, url: r.url }] });
         row.firstElementChild.innerHTML = `<a href="#/item/${created.id}">${esc(r.name)}</a>`;
-        status.textContent = r.price != null ? money(r.price, r.currency || 'CZK') : 'price missing';
+        status.textContent = r.price != null ? `${money(r.price, r.currency || 'CZK')}${convertedFrom(r) ? ` (${convertedFrom(r)})` : ''}` : 'price missing';
       } catch (err) { status.textContent = `failed: ${err.message}`; }
     }
   };

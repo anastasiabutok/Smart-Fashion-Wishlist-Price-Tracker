@@ -204,16 +204,50 @@ async function safeGet(rawUrl, { maxBytes, accept, timeoutMs = 10000 }, fetchFn 
   throw Object.assign(new Error('Too many redirects'), { status: 502 });
 }
 
-export async function extractFromUrl(rawUrl, { fetchFn } = {}) {
+export async function extractFromUrl(rawUrl, { fetchFn, ratesFn = czkRates } = {}) {
   let u;
   try { u = new URL(rawUrl); } catch { throw Object.assign(new Error('That does not look like a link'), { status: 400 }); }
   const { buf, url } = await safeGet(u.href, { maxBytes: 2 * 1024 * 1024, accept: 'text/html' }, fetchFn);
   const r = parseProductHtml(buf.toString('utf8'), url);
   r.url = url;
   r.shop = shopFromHost(new URL(url).hostname);
-  // The app treats every price as CZK, so $550 must never be saved as "550 CZK" and rank as cheapest.
-  if (r.price != null && r.currency && r.currency !== 'CZK') { r.foreign_price = r.price; r.price = null; }
+  // The app compares everything in CZK, so $550 must never be saved as "550 CZK". No rate means no price, not a guess.
+  if (r.price != null && r.currency && r.currency !== 'CZK') {
+    r.foreign_price = r.price;
+    r.foreign_currency = r.currency;
+    const rate = (await ratesFn())?.[r.currency];
+    r.price = rate ? Math.round(r.foreign_price * rate) : null;
+    if (rate) r.currency = 'CZK';
+  }
   return r;
+}
+
+// ---- Converting to CZK with the Czech National Bank's daily rates ----
+const CNB_RATES_URL = 'https://www.cnb.cz/en/financial-markets/foreign-exchange-market/central-bank-exchange-rate-fixing/central-bank-exchange-rate-fixing/daily.txt';
+const RATES_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+// Lines look like "USA|dollar|1|USD|21.762". The amount matters: "Japan|yen|100|JPY|13.779" is per 100 yen.
+export function parseCnbRates(text) {
+  const rates = {};
+  for (const line of String(text).split('\n')) {
+    const [, , amount, code, rate] = line.trim().split('|');
+    const czkPerUnit = Number(rate?.replace(',', '.')) / Number(amount);
+    if (/^[A-Z]{3}$/.test(code || '') && czkPerUnit > 0) rates[code] = czkPerUnit;
+  }
+  return Object.keys(rates).length ? rates : null;
+}
+
+let cachedRates = null;
+let cachedAt = 0;
+// Falls back to the last rates we have if the bank cannot be reached.
+export async function czkRates() {
+  if (cachedRates && Date.now() - cachedAt < RATES_MAX_AGE_MS) return cachedRates;
+  try {
+    const res = await fetch(CNB_RATES_URL, { signal: AbortSignal.timeout(8000) });
+    const rates = res.ok ? parseCnbRates(await res.text()) : null;
+    if (rates) { cachedRates = rates; cachedAt = Date.now(); }
+  } catch { /* use what we have */ }
+  return cachedRates;
 }
 
 export async function downloadImage(rawUrl, { fetchFn } = {}) {

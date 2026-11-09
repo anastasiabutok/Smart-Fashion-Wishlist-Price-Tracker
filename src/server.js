@@ -150,7 +150,7 @@ export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'upload
             if (!shop) return send(res, 400, { error: 'Could not tell which shop this is. Choose the shop and try again.' });
             const match = matchProduct(item, found);
             store.addSource(itemId, { shop, shop_type: shopType(shop), url: found.url, price: found.price, uncertain: match.uncertain });
-            return send(res, 201, { item: itemView(store.getItem(profile, itemId), store.listCodes(profile)), match, price_found: found.price != null });
+            return send(res, 201, { item: itemView(store.getItem(profile, itemId), store.listCodes(profile)), match, price_found: found.price != null, price: found.price, foreign_price: found.foreign_price, foreign_currency: found.foreign_currency });
           }
           if (sub === 'sources' && method === 'POST') {
             const b = await readBody(req);

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parsePrice, parseProductHtml, isPrivateIp, extractFromUrl, shopFromHost, matchProduct } from '../src/extract.js';
+import { parsePrice, parseProductHtml, isPrivateIp, extractFromUrl, shopFromHost, matchProduct, parseCnbRates } from '../src/extract.js';
 
 test('parsePrice handles Czech and English formats', () => {
   assert.equal(parsePrice('12 660,00 Kč'), 12660);
@@ -105,11 +105,29 @@ test('reads a real Shopbop page: brand, colour and price from the ProductGroup',
   assert.equal(r.currency, 'USD');
 });
 
-test('a price in another currency is not offered as a CZK price', async () => {
-  const r = await extractFromUrl('https://8.8.8.8/x', { fetchFn: async () => new Response(fixture('shopbop-bag.html'), { status: 200 }) });
-  assert.equal(r.price, null);
+const shopbopPage = async () => new Response(fixture('shopbop-bag.html'), { status: 200 });
+
+test('a price in another currency is converted to CZK with the bank rate', async () => {
+  const r = await extractFromUrl('https://8.8.8.8/x', { fetchFn: shopbopPage, ratesFn: async () => ({ USD: 21.762 }) });
+  assert.equal(r.price, 11969);
+  assert.equal(r.currency, 'CZK');
   assert.equal(r.foreign_price, 550);
-  assert.equal(r.currency, 'USD');
+  assert.equal(r.foreign_currency, 'USD');
+});
+
+test('without a rate there is no price, never the foreign number as CZK', async () => {
+  for (const ratesFn of [async () => null, async () => ({ EUR: 24.36 })]) {
+    const r = await extractFromUrl('https://8.8.8.8/x', { fetchFn: shopbopPage, ratesFn });
+    assert.equal(r.price, null);
+    assert.equal(r.foreign_price, 550);
+    assert.equal(r.currency, 'USD');
+  }
+});
+
+test('reads the Czech National Bank rate list, per single unit', () => {
+  const rates = parseCnbRates('09 Nov 2026 #215\nCountry|Currency|Amount|Code|Rate\nUSA|dollar|1|USD|21.762\nJapan|yen|100|JPY|13.779\n');
+  assert.deepEqual(rates, { USD: 21.762, JPY: 0.13779 });
+  assert.equal(parseCnbRates('<html>not the list</html>'), null);
 });
 
 const romyZalando = { name: 'ROMY TOTE', brand: 'Tory Burch', color: 'black' };

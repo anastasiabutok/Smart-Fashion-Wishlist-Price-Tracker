@@ -16,6 +16,6 @@ On a phone on the same Wi-Fi open `http://<computer-ip>:3000` and use "Add to Ho
 - On an item, paste a link from another shop to add it as a source; the price is read, and the match is flagged "uncertain" if brand, name or colour differ. Search links per shop are provided (Google site search), the app does not search shops by itself.
 - Otherwise prices are entered by hand. No scraping, no background refresh, no push notifications yet.
 - Profiles are a name, not a login: anyone who types the same name sees that profile. Add real auth before hosting it publicly.
-- Prices are not converted between currencies; everything is treated as CZK. A link priced in another currency (e.g. Shopbop in USD) is added without a price, to be entered by hand.
+- A link priced in another currency (e.g. Shopbop in USD) is converted to CZK once, when added, at the Czech National Bank's daily rate. Shipping, customs and card fees are not included. If no rate is available the price is left for you to enter by hand. Prices typed by hand are treated as CZK.
 - Only the single best discount code is applied (no stacking).
 - Matching the same item across shops is manual (shop sources are attached by you).

@@ -202,13 +202,13 @@ function addView() {
     try {
       const r = await api('POST', '/extract', { url: link });
       const set = (n, v) => { if (v != null && v !== '') form.elements[n].value = v; };
-      set('name', r.name); set('brand', r.brand); set('color', r.color); set('price', r.price); set('url', r.url);
+      set('name', r.name); set('brand', r.brand); set('color', r.color); set('sizes', r.sizes); set('price', r.price); set('url', r.url);
       if (r.shop && [...form.elements.shop.options].some((o) => o.value === r.shop)) form.elements.shop.value = r.shop;
       fetchedImage = r.image_url || null;
       const img = view.querySelector('#fill-img');
       img.hidden = !fetchedImage; if (fetchedImage) img.src = safeUrl(fetchedImage);
       const missing = ['name', 'price', 'image_url'].filter((k) => !r[k]).map((k) => ({ name: 'name', price: 'price', image_url: 'photo' }[k]));
-      msg.textContent = missing.length ? `Filled in what I could. Please check: ${missing.join(', ')}.` : 'Filled in. Check it, then save. Sizes are not read yet.';
+      msg.textContent = missing.length ? `Filled in what I could. Please check: ${missing.join(', ')}.` : 'Filled in. Check it, then save.';
     } catch (err) {
       msg.textContent = `Could not read that page (${err.message}). Fill it in by hand below.`;
     }

@@ -5,7 +5,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, createStore } from './db.js';
 import { rankSources, atOrBelowTarget } from './pricing.js';
-import { extractFromUrl, downloadImage } from './extract.js';
+import { extractFromUrl, downloadImage, matchProduct } from './extract.js';
 
 const PUBLIC_DIR = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
 const MIME = {
@@ -140,6 +140,17 @@ export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'upload
               await unlink(join(uploadDir, old.slice(9))).catch(() => {});
             }
             return send(res, 200, itemView(store.getItem(profile, itemId), store.listCodes(profile)));
+          }
+          if (sub === 'sources' && parts[3] === 'from-link' && method === 'POST') {
+            const b = await readBody(req);
+            let found;
+            try { found = await extractFromUrl(String(b.url || '').trim(), { fetchFn }); }
+            catch (e) { return send(res, e.status || 502, { error: e.message || 'Could not read that page' }); }
+            const shop = b.shop || found.shop;
+            if (!shop) return send(res, 400, { error: 'Could not tell which shop this is. Choose the shop and try again.' });
+            const match = matchProduct(item, found);
+            store.addSource(itemId, { shop, shop_type: shopType(shop), url: found.url, price: found.price, uncertain: match.uncertain });
+            return send(res, 201, { item: itemView(store.getItem(profile, itemId), store.listCodes(profile)), match, price_found: found.price != null });
           }
           if (sub === 'sources' && method === 'POST') {
             const b = await readBody(req);

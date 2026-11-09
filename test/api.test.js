@@ -135,3 +135,23 @@ test('link autofill: extract, then item is saved with its own copy of the photo'
   assert.equal(evil.json.image_url, null);
   server.close();
 });
+
+test('add same item from another shop by link: price read, uncertain flag when names differ', async () => {
+  const same = '<meta property="og:title" content="Tory Burch ELEANOR SLIM SHOULDER BAG - Kabelka - albarossa - Answear.cz"><meta name="twitter:data1" content="13 990 Kč">';
+  const other = '<meta property="og:title" content="Gucci Totally Different Tote, barva modrá | Shop.cz"><meta name="twitter:data1" content="900 Kč">';
+  let page = same;
+  const { server, call } = await start(async () => new Response(page, { status: 200 }));
+  const item = await call('POST', '/api/items', 'nasta', { name: 'ELEANOR SLIM SHOULDER BAG', brand: 'Tory Burch', color: 'albarossa', sources: [] });
+  const a = await call('POST', `/api/items/${item.json.id}/sources/from-link`, 'nasta', { url: 'https://8.8.8.8/p1', shop: 'Answear' });
+  assert.equal(a.status, 201);
+  assert.equal(a.json.match.uncertain, false);
+  assert.equal(a.json.item.sources[0].price, 13990);
+  page = other;
+  const b = await call('POST', `/api/items/${item.json.id}/sources/from-link`, 'nasta', { url: 'https://8.8.8.8/p2', shop: 'Other' });
+  assert.equal(b.json.match.uncertain, true);
+  const noShop = await call('POST', `/api/items/${item.json.id}/sources/from-link`, 'nasta', { url: 'https://8.8.8.8/p3' });
+  assert.equal(noShop.status, 400);
+  const foreign = await call('POST', `/api/items/${item.json.id}/sources/from-link`, 'other', { url: 'https://8.8.8.8/p1', shop: 'Answear' });
+  assert.equal(foreign.status, 404);
+  server.close();
+});

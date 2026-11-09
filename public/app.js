@@ -91,6 +91,8 @@ function trendSvg(history) {
     <div class="mute">Lowest read: ${money(lo)} · highest: ${money(hi)} (own readings only)</div>`;
 }
 
+const SHOP_SITES = [['Zalando', 'zalando.cz'], ['Answear', 'answear.cz'], ['AboutYou', 'aboutyou.cz'], ['Farfetch', 'farfetch.com'], ['Mytheresa', 'mytheresa.com'], ['Net-a-Porter', 'net-a-porter.com'], ['SSENSE', 'ssense.com'], ['Shopbop', 'shopbop.com'], ['LuisaViaRoma', 'luisaviaroma.com']].map(([name, domain]) => ({ name, domain }));
+
 async function itemView(id) {
   const i = await api('GET', `/items/${id}`);
   titleEl.textContent = i.brand || 'Item';
@@ -113,6 +115,8 @@ async function itemView(id) {
       </div></div>`;
   }).join('');
 
+  const have = new Set(i.sources.map((s) => s.shop));
+  const otherShops = SHOP_SITES.filter((s) => !have.has(s.name));
   view.innerHTML = `
     ${img ? `<img class="hero" src="${esc(img)}" alt="">` : ''}
     <label class="photo-btn">${img ? 'Change photo' : 'Add photo'}<input id="photo-input" type="file" accept="image/*" hidden></label>
@@ -123,6 +127,13 @@ async function itemView(id) {
       <h2>Shops, cheapest first</h2>${rows || '<p class="mute">No shops yet.</p>'}
     </div>
     <div class="card"><h2 style="margin-top:0">Price trend</h2>${trendSvg(i.history)}</div>
+    <div class="card">
+      <h2 style="margin-top:0">Find it in other shops</h2>
+      <p class="muted">Open a search, find the same item, paste its link here. The price is read and added.</p>
+      <div>${otherShops.map((s) => `<a class="badge" target="_blank" rel="noopener" href="${esc(`https://www.google.com/search?q=${encodeURIComponent([i.brand, i.name, i.color].filter(Boolean).join(' '))}+site:${s.domain}`)}">${esc(s.name)}</a>`).join(' ')}</div>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:10px"><input id="from-link" inputmode="url" placeholder="https://… link from another shop"><button id="from-link-btn" type="button">Add</button></div>
+      <p id="from-link-msg" class="muted"></p>
+    </div>
     <div class="card">
       <h2 style="margin-top:0">Add a shop</h2>
       <form id="src-form">
@@ -142,6 +153,18 @@ async function itemView(id) {
       <button class="link" data-act="del-item">Delete item</button>
     </div>`;
 
+  view.querySelector('#from-link-btn').onclick = async () => {
+    const msg = view.querySelector('#from-link-msg');
+    const url = view.querySelector('#from-link').value.trim();
+    if (!url) { msg.textContent = 'Paste a link first.'; return; }
+    msg.textContent = 'Reading the page…';
+    try {
+      const r = await api('POST', `/items/${id}/sources/from-link`, { url });
+      if (!r.price_found) alert('Shop added, but I could not read the price. Enter it by hand.');
+      else if (r.match.uncertain) alert(`Added, but please check it is the same item (${r.match.reasons.join(', ')}).`);
+      itemView(id);
+    } catch (err) { msg.textContent = `Could not add it (${err.message}). Use "Add a shop" below.`; }
+  };
   view.querySelector('#photo-input').onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -229,6 +252,35 @@ function addView() {
   };
 }
 
+function importView() {
+  titleEl.textContent = 'Import links';
+  view.innerHTML = `<form id="imp" class="card">
+    <label>Paste product links, one per line (e.g. from your wishlist)</label>
+    <textarea name="links" rows="8" placeholder="https://www.zalando.cz/…&#10;https://answear.cz/p/…" style="width:100%"></textarea>
+    <button class="primary">Import</button></form><div id="imp-out"></div>`;
+  view.querySelector('#imp').onsubmit = async (e) => {
+    e.preventDefault();
+    const links = [...new Set(new FormData(e.target).get('links').split(/\s+/).filter((l) => /^https?:\/\//i.test(l)))].slice(0, 50);
+    const out = view.querySelector('#imp-out');
+    if (!links.length) { out.innerHTML = '<p class="muted">No links found.</p>'; return; }
+    out.innerHTML = '<div class="card" id="imp-list"></div>';
+    const list = view.querySelector('#imp-list');
+    for (const link of links) {
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = `<div class="grow mute">${esc(link.slice(0, 60))}…</div><div>reading…</div>`;
+      list.append(row);
+      const status = row.lastElementChild;
+      try {
+        const r = await api('POST', '/extract', { url: link });
+        if (!r.name) throw new Error('no product found');
+        const created = await api('POST', '/items', { name: r.name, brand: r.brand, color: r.color, sizes: r.sizes, image_url: r.image_url, sources: [{ shop: r.shop || 'Other', price: r.price, url: r.url }] });
+        row.firstElementChild.innerHTML = `<a href="#/item/${created.id}">${esc(r.name)}</a>`;
+        status.textContent = r.price != null ? money(r.price, r.currency || 'CZK') : 'price missing';
+      } catch (err) { status.textContent = `failed: ${err.message}`; }
+    }
+  };
+}
+
 async function codesView() {
   titleEl.textContent = 'Discount codes';
   const codes = await api('GET', '/codes');
@@ -264,6 +316,7 @@ async function route() {
   try {
     if (page === 'item') await itemView(id);
     else if (page === 'add') addView();
+    else if (page === 'import') importView();
     else if (page === 'codes') await codesView();
     else await itemsView();
   } catch (e) {

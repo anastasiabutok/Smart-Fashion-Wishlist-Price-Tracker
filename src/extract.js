@@ -215,3 +215,21 @@ export function shopFromHost(host) {
   const h = host.toLowerCase();
   return SHOP_HOSTS.find(([k]) => h.includes(k))?.[1] ?? null;
 }
+
+// ---- Is a page from another shop the same product as an item we already track? ----
+const norm = (s) => String(s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, ' ');
+const tokens = (s) => new Set(norm(s).split(/\s+/).filter((t) => t.length > 1));
+
+// Returns { uncertain, reasons }. Different shops word names differently, so we only
+// say "confident" when brand agrees and most name words overlap; otherwise the user is warned.
+export function matchProduct(item, found) {
+  const reasons = [];
+  if (item.brand && found.brand && norm(item.brand).trim() !== norm(found.brand).trim()) reasons.push('different brand');
+  if (!found.brand && item.brand && !norm(found.name).includes(norm(item.brand).trim())) reasons.push('brand not found on page');
+  const a = tokens(item.name), b = tokens(found.name);
+  const common = [...a].filter((t) => b.has(t)).length;
+  const share = a.size ? common / a.size : 0;
+  if (share < 0.6) reasons.push('name differs');
+  if (item.color && found.color && ![...tokens(item.color)].some((t) => tokens(found.color).has(t))) reasons.push('colour differs');
+  return { uncertain: reasons.length > 0, reasons };
+}

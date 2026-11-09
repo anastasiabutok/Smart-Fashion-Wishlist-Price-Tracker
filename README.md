@@ -12,6 +12,8 @@ On a phone on the same Wi-Fi open `http://<computer-ip>:3000` and use "Add to Ho
 
 ## Known limits (MVP 1)
 - Paste a product link and the app tries to fill in name, brand, colour, sizes, price and photo (works on pages that expose standard product data, e.g. Zalando; may fail on shops that block automated requests, then fill in by hand). Shops needing a login (Zalando Lounge, BestSecret) cannot be read this way.
+- Import page: paste many links at once, each becomes an item.
+- On an item, paste a link from another shop to add it as a source; the price is read, and the match is flagged "uncertain" if brand, name or colour differ. Search links per shop are provided (Google site search), the app does not search shops by itself.
 - Otherwise prices are entered by hand. No scraping, no background refresh, no push notifications yet.
 - Profiles are a name, not a login: anyone who types the same name sees that profile. Add real auth before hosting it publicly.
 - Prices are not converted between currencies; everything is treated as CZK.

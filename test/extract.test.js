@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parsePrice, parseProductHtml, isPrivateIp, extractFromUrl, shopFromHost } from '../src/extract.js';
+import { parsePrice, parseProductHtml, isPrivateIp, extractFromUrl, shopFromHost, matchProduct } from '../src/extract.js';
 
 test('parsePrice handles Czech and English formats', () => {
   assert.equal(parsePrice('12 660,00 Kč'), 12660);
@@ -94,4 +94,43 @@ test('sizes: sold-out variants are left out, duplicates merged, none means null'
 test('a JSON-LD brand with no name in the page does not crash', () => {
   const html = '<script type="application/ld+json">{"@type":"Product","brand":{"name":"Acme"}}</script>';
   assert.equal(parseProductHtml(html).brand, 'Acme');
+});
+
+test('reads a real Shopbop page: brand, colour and price from the ProductGroup', () => {
+  const r = parseProductHtml(fixture('shopbop-bag.html'), 'https://www.shopbop.com/x.htm');
+  assert.equal(r.name, 'Eleanor Slim Shoulder Bag');
+  assert.equal(r.brand, 'Tory Burch');
+  assert.equal(r.color, 'Warm White');
+  assert.equal(r.price, 550);
+  assert.equal(r.currency, 'USD');
+});
+
+test('a price in another currency is not offered as a CZK price', async () => {
+  const r = await extractFromUrl('https://8.8.8.8/x', { fetchFn: async () => new Response(fixture('shopbop-bag.html'), { status: 200 }) });
+  assert.equal(r.price, null);
+  assert.equal(r.foreign_price, 550);
+  assert.equal(r.currency, 'USD');
+});
+
+const romyZalando = { name: 'ROMY TOTE', brand: 'Tory Burch', color: 'black' };
+const romyAnswear = { name: 'Tote taška dámská kožená Romy', brand: 'Tory Burch', color: 'černá' };
+
+test('match: same product worded differently is not uncertain, whichever shop came first', () => {
+  assert.deepEqual(matchProduct(romyZalando, romyAnswear), { uncertain: false, reasons: [] });
+  assert.deepEqual(matchProduct(romyAnswear, romyZalando), { uncertain: false, reasons: [] });
+  const bunny = { name: 'Kabelka přes rameno dámská kožená Bunny Knot', brand: 'Tory Burch', color: 'hnědá' };
+  assert.equal(matchProduct(bunny, { name: 'BUNNY KNOT SMALL SHOULDER BAG', brand: 'Tory Burch', color: 'dark cocoa' }).uncertain, false);
+});
+
+test('match: a real difference in brand, name or colour is uncertain', () => {
+  assert.deepEqual(matchProduct(romyZalando, { ...romyAnswear, brand: 'Gucci' }).reasons, ['different brand']);
+  assert.deepEqual(matchProduct(romyZalando, { ...romyAnswear, color: 'hnědá' }).reasons, ['colour differs']);
+  const eleanor = { name: 'ELEANOR SLIM SHOULDER BAG', brand: 'Tory Burch', color: 'albarossa' };
+  assert.deepEqual(matchProduct(eleanor, { name: 'Bunny Knot Small Shoulder Bag', brand: 'Tory Burch' }).reasons, ['name differs']);
+  assert.deepEqual(matchProduct(eleanor, { name: 'Eleanor Slim Shoulder Bag', brand: 'Tory Burch', color: 'Warm White' }).reasons, ['colour differs']);
+  assert.equal(matchProduct({ name: 'Bunny Knot Belt Bag' }, { name: 'Bunny Knot Small Shoulder Bag' }).uncertain, true);
+});
+
+test('match: an unknown fancy colour name is not treated as a difference', () => {
+  assert.equal(matchProduct({ ...romyZalando, color: 'park bench' }, romyAnswear).uncertain, false);
 });

@@ -74,7 +74,8 @@ const currencyOf = (text) => CURRENCY_BY_SYMBOL.find(([re]) => re.test(text || '
 export function parseProductHtml(html, pageUrl = '') {
   const meta = metaTags(html);
   const ld = firstJsonLd(html, 'Product');
-  const r = { name: null, brand: null, color: null, price: null, currency: null, image_url: null, sizes: readSizes(ld, firstJsonLd(html, 'ProductGroup')) };
+  const group = firstJsonLd(html, 'ProductGroup');
+  const r = { name: null, brand: null, color: null, price: null, currency: null, image_url: null, sizes: readSizes(ld, group) };
 
   if (ld) {
     r.name = ld.name ? decode(ld.name) : null;
@@ -102,6 +103,18 @@ export function parseProductHtml(html, pageUrl = '') {
     if (m) { r.price = parsePrice(m[1]); r.currency ||= currencyOf(m[1]); }
   }
   r.color ||= meta['twitter:label2']?.match(/barv|colou?r|farbe/i) ? meta['twitter:data2'] || null : null;
+  // Shopbop has only a ProductGroup with one variant per colour. It fills gaps, so Zalando's tags above still win.
+  if (group && !ld) {
+    r.brand = decode(group.brand?.name ?? '') || null;
+    const variants = [].concat(group.hasVariant ?? []);
+    const offer = [].concat((variants.find(inStock) ?? variants[0])?.offers ?? [])[0];
+    if (!r.price && offer) {
+      r.price = parsePrice(offer.price ?? offer.lowPrice);
+      r.currency ||= offer.priceCurrency || null;
+    }
+    const colours = [...new Set(variants.map((v) => v.color).filter(Boolean))];
+    if (colours.length === 1) r.color ||= decode(colours[0]);
+  }
   // Some shops put their logo in og:image; that is not the product photo.
   if (!r.image_url && meta['og:image'] && !/logo|share\./i.test(meta['og:image'])) r.image_url = meta['og:image'];
 
@@ -198,6 +211,8 @@ export async function extractFromUrl(rawUrl, { fetchFn } = {}) {
   const r = parseProductHtml(buf.toString('utf8'), url);
   r.url = url;
   r.shop = shopFromHost(new URL(url).hostname);
+  // The app treats every price as CZK, so $550 must never be saved as "550 CZK" and rank as cheapest.
+  if (r.price != null && r.currency && r.currency !== 'CZK') { r.foreign_price = r.price; r.price = null; }
   return r;
 }
 
@@ -220,16 +235,40 @@ export function shopFromHost(host) {
 const norm = (s) => String(s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, ' ');
 const tokens = (s) => new Set(norm(s).split(/\s+/).filter((t) => t.length > 1));
 
+// Words that describe the type of product, in the shops' Czech and English. Only model words ("Romy", "Bunny Knot") identify it.
+const GENERIC_WORDS = new Set('kabelka kabelky taska damska damske damsky kozena kozeny semisova pres rameno crossbody nakupni vakova leather suede womens shoulder tote bag'.split(' '));
+const modelWords = (s) => new Set([...tokens(s)].filter((t) => !GENERIC_WORDS.has(t)));
+
+// Shops name colours in Czech or with fancy names. albarossa is labelled bordeaux on Zalando.
+const COLOUR_FAMILIES = {
+  black: 'black cerna cerny', brown: 'brown hneda hnedy cocoa chocolate espresso', beige: 'beige bezova bezovy cream ecru sand',
+  white: 'white bila bily ivory', red: 'red cervena cerveny', burgundy: 'burgundy bordeaux burgundska vinova wine albarossa',
+  blue: 'blue modra modry navy namornicka', green: 'green zelena zeleny olive khaki', pink: 'pink ruzova ruzovy',
+  grey: 'grey gray seda sedy', yellow: 'yellow zluta zluty', purple: 'purple fialova fialovy lilac', orange: 'orange oranzova oranzovy',
+};
+const colourFamilies = (s) => {
+  const t = tokens(s);
+  return new Set(Object.keys(COLOUR_FAMILIES).filter((f) => COLOUR_FAMILIES[f].split(' ').some((w) => t.has(w))));
+};
+// Different only when both colours are understood and share nothing; an unknown fancy name proves nothing.
+function coloursDiffer(a, b) {
+  const tb = tokens(b);
+  if ([...tokens(a)].some((t) => tb.has(t))) return false;
+  const fa = colourFamilies(a), fb = colourFamilies(b);
+  return fa.size > 0 && fb.size > 0 && ![...fa].some((f) => fb.has(f));
+}
+
 // Returns { uncertain, reasons }. Different shops word names differently, so we only
-// say "confident" when brand agrees and most name words overlap; otherwise the user is warned.
+// say "confident" when brand agrees and most model words overlap; otherwise the user is warned.
 export function matchProduct(item, found) {
   const reasons = [];
   if (item.brand && found.brand && norm(item.brand).trim() !== norm(found.brand).trim()) reasons.push('different brand');
   if (!found.brand && item.brand && !norm(found.name).includes(norm(item.brand).trim())) reasons.push('brand not found on page');
-  const a = tokens(item.name), b = tokens(found.name);
+  const a = modelWords(item.name), b = modelWords(found.name);
   const common = [...a].filter((t) => b.has(t)).length;
-  const share = a.size ? common / a.size : 0;
-  if (share < 0.6) reasons.push('name differs');
-  if (item.color && found.color && ![...tokens(item.color)].some((t) => tokens(found.color).has(t))) reasons.push('colour differs');
+  // Measured against the words of both names, so the result is the same whichever shop was added first.
+  const allWords = a.size + b.size - common;
+  if ((allWords ? common / allWords : 0) < 0.6) reasons.push('name differs');
+  if (item.color && found.color && coloursDiffer(item.color, found.color)) reasons.push('colour differs');
   return { uncertain: reasons.length > 0, reasons };
 }

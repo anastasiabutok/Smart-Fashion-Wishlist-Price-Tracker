@@ -80,6 +80,9 @@ export function createStore(db) {
         'SELECT 1 FROM sources s JOIN items i ON i.id = s.item_id WHERE s.id = ? AND i.profile = ?'
       ).get(sourceId, profile);
     },
+    hasSourceUrl(profile, url) {
+      return !!q('SELECT 1 FROM sources s JOIN items i ON i.id = s.item_id WHERE i.profile = ? AND s.url = ?').get(profile, url);
+    },
     sourcesFor(itemId) {
       return q('SELECT * FROM sources WHERE item_id = ?').all(itemId);
     },

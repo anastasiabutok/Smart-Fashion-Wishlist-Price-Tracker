@@ -56,6 +56,21 @@ export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'upload
     return chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
   };
 
+  // A picture found by link autofill: keep our own copy instead of hotlinking the shop.
+  // Only a fetched copy is stored; anything else is dropped.
+  const keepImage = async (imageUrl) => {
+    if (!/^https?:\/\//i.test(imageUrl || '')) return null;
+    try {
+      const buf = await downloadImage(imageUrl, { fetchFn });
+      const ext = sniffImage(buf);
+      if (!ext) return null;
+      await mkdir(uploadDir, { recursive: true });
+      const name = `${randomBytes(16).toString('hex')}.${ext}`;
+      await writeFile(join(uploadDir, name), buf);
+      return `/uploads/${name}`;
+    } catch { return null; }
+  };
+
   const itemView = (item, codes) => {
     const ranked = rankSources(store.sourcesFor(item.id), codes);
     return {
@@ -77,6 +92,30 @@ export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'upload
         const [kind, id, sub] = parts;
         const method = req.method;
 
+        // Many links at once (used by the browser extension). Product pages are public, so the
+        // server reads them itself; links already in this profile are skipped.
+        if (kind === 'import' && method === 'POST') {
+          const b = await readBody(req);
+          const urls = [...new Set((Array.isArray(b.urls) ? b.urls : []).map((u) => String(u).trim()).filter((u) => /^https?:\/\//i.test(u)))].slice(0, 60);
+          if (!urls.length) return send(res, 400, { error: 'No links to import' });
+          const results = [];
+          for (const link of urls) {
+            try {
+              if (store.hasSourceUrl(profile, link)) { results.push({ url: link, status: 'already in your list' }); continue; }
+              const r = await extractFromUrl(link, { fetchFn });
+              if (!r.name) throw new Error('no product found on the page');
+              const shop = r.shop || 'Other';
+              if (store.hasSourceUrl(profile, r.url)) { results.push({ url: link, status: 'already in your list' }); continue; }
+              const itemId = store.createItem(profile, { name: r.name, brand: r.brand, color: r.color, sizes: r.sizes, image_url: await keepImage(r.image_url) });
+              store.addSource(itemId, { shop, shop_type: shopType(shop), url: r.url, price: r.price });
+              results.push({ url: link, status: 'added', id: itemId, name: r.name, price: r.price });
+            } catch (e) {
+              results.push({ url: link, status: 'failed', error: e.message || String(e) });
+            }
+          }
+          return send(res, 200, { results });
+        }
+
         if (kind === 'extract' && method === 'POST') {
           const b = await readBody(req);
           try {
@@ -95,20 +134,7 @@ export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'upload
           if (!id && method === 'POST') {
             const b = await readBody(req);
             if (!b.name) return send(res, 400, { error: 'name is required' });
-            // A picture found by link autofill: keep our own copy instead of hotlinking the shop.
-            if (/^https?:\/\//i.test(b.image_url || '')) {
-              try {
-                const buf = await downloadImage(b.image_url, { fetchFn });
-                const ext = sniffImage(buf);
-                if (!ext) throw new Error('not an image');
-                await mkdir(uploadDir, { recursive: true });
-                const name = `${randomBytes(16).toString('hex')}.${ext}`;
-                await writeFile(join(uploadDir, name), buf);
-                b.image_url = `/uploads/${name}`;
-              } catch { b.image_url = null; }
-            } else {
-              b.image_url = null; // only our own uploads or a fetched copy are allowed
-            }
+            b.image_url = await keepImage(b.image_url);
             const itemId = store.createItem(profile, b);
             for (const s of b.sources || []) store.addSource(itemId, { ...s, shop_type: shopType(s.shop) });
             return send(res, 201, itemView(store.getItem(profile, itemId), store.listCodes(profile)));

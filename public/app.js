@@ -178,6 +178,9 @@ async function itemView(id) {
 function addView() {
   titleEl.textContent = 'Check item';
   view.innerHTML = `<form id="add" class="card">
+    <label>Paste a product link to fill in the details</label>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:10px"><input id="link" inputmode="url" placeholder="https://www.zalando.cz/…"><button type="button" id="fill">Fill in</button></div>
+    <p id="fill-msg" class="muted"></p><img id="fill-img" alt="" hidden style="max-width:140px;border-radius:8px">
     <label>Item name</label><input name="name" required placeholder="e.g. Marianne sweater">
     <div class="two"><div><label>Brand</label><input name="brand" placeholder="STAUD"></div>
     <div><label>Colour</label><input name="color" placeholder="black"></div></div>
@@ -189,12 +192,33 @@ function addView() {
     <div><label>Link</label><input name="url" inputmode="url" placeholder="https://…"></div></div>
     <label>Target price (optional)</label><input name="target" inputmode="decimal">
     <button class="primary">See the price comparison</button></form>`;
-  view.querySelector('#add').onsubmit = async (e) => {
+  const form = view.querySelector('#add');
+  let fetchedImage = null;
+  view.querySelector('#fill').onclick = async () => {
+    const msg = view.querySelector('#fill-msg');
+    const link = view.querySelector('#link').value.trim();
+    if (!link) { msg.textContent = 'Paste a link first.'; return; }
+    msg.textContent = 'Reading the page…';
+    try {
+      const r = await api('POST', '/extract', { url: link });
+      const set = (n, v) => { if (v != null && v !== '') form.elements[n].value = v; };
+      set('name', r.name); set('brand', r.brand); set('color', r.color); set('price', r.price); set('url', r.url);
+      if (r.shop && [...form.elements.shop.options].some((o) => o.value === r.shop)) form.elements.shop.value = r.shop;
+      fetchedImage = r.image_url || null;
+      const img = view.querySelector('#fill-img');
+      img.hidden = !fetchedImage; if (fetchedImage) img.src = safeUrl(fetchedImage);
+      const missing = ['name', 'price', 'image_url'].filter((k) => !r[k]).map((k) => ({ name: 'name', price: 'price', image_url: 'photo' }[k]));
+      msg.textContent = missing.length ? `Filled in what I could. Please check: ${missing.join(', ')}.` : 'Filled in. Check it, then save. Sizes are not read yet.';
+    } catch (err) {
+      msg.textContent = `Could not read that page (${err.message}). Fill it in by hand below.`;
+    }
+  };
+  form.onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const created = await api('POST', '/items', {
       name: f.get('name'), brand: f.get('brand') || null, color: f.get('color') || null,
-      sizes: f.get('sizes') || null, target_price: num(f.get('target')),
+      sizes: f.get('sizes') || null, target_price: num(f.get('target')), image_url: fetchedImage,
       sources: [{ shop: f.get('shop'), price: num(f.get('price')), url: f.get('url') || null }],
     });
     const photo = f.get('photo');

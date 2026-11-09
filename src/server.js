@@ -5,6 +5,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, createStore } from './db.js';
 import { rankSources, atOrBelowTarget } from './pricing.js';
+import { extractFromUrl, downloadImage } from './extract.js';
 
 const PUBLIC_DIR = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
 const MIME = {
@@ -34,7 +35,7 @@ export function sniffImage(buf) {
 const GATED = new Set(['zalando lounge', 'bestsecret']);
 export const shopType = (shop) => (GATED.has(String(shop).toLowerCase()) ? 'gated' : 'public');
 
-export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'uploads' } = {}) {
+export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'uploads', fetchFn } = {}) {
   const readRaw = async (req) => {
     const chunks = [];
     let size = 0;
@@ -76,6 +77,16 @@ export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'upload
         const [kind, id, sub] = parts;
         const method = req.method;
 
+        if (kind === 'extract' && method === 'POST') {
+          const b = await readBody(req);
+          try {
+            return send(res, 200, await extractFromUrl(String(b.url || '').trim(), { fetchFn }));
+          } catch (e) {
+            // Not a server fault: the shop may block us or need a login. The app falls back to the manual form.
+            return send(res, e.status || 502, { error: e.message || 'Could not read that page' });
+          }
+        }
+
         if (kind === 'items') {
           if (!id && method === 'GET') {
             const codes = store.listCodes(profile);
@@ -84,6 +95,20 @@ export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'upload
           if (!id && method === 'POST') {
             const b = await readBody(req);
             if (!b.name) return send(res, 400, { error: 'name is required' });
+            // A picture found by link autofill: keep our own copy instead of hotlinking the shop.
+            if (/^https?:\/\//i.test(b.image_url || '')) {
+              try {
+                const buf = await downloadImage(b.image_url, { fetchFn });
+                const ext = sniffImage(buf);
+                if (!ext) throw new Error('not an image');
+                await mkdir(uploadDir, { recursive: true });
+                const name = `${randomBytes(16).toString('hex')}.${ext}`;
+                await writeFile(join(uploadDir, name), buf);
+                b.image_url = `/uploads/${name}`;
+              } catch { b.image_url = null; }
+            } else {
+              b.image_url = null; // only our own uploads or a fetched copy are allowed
+            }
             const itemId = store.createItem(profile, b);
             for (const s of b.sources || []) store.addSource(itemId, { ...s, shop_type: shopType(s.shop) });
             return send(res, 201, itemView(store.getItem(profile, itemId), store.listCodes(profile)));

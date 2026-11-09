@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb, createStore } from '../src/db.js';
 import { createApp } from '../src/server.js';
 
-async function start() {
+async function start(fetchFn) {
   const uploadDir = mkdtempSync(join(tmpdir(), 'pt-uploads-'));
-  const server = http.createServer(createApp(createStore(openDb(':memory:')), { uploadDir }));
+  const server = http.createServer(createApp(createStore(openDb(':memory:')), { uploadDir, fetchFn }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = async (method, path, profile, body) => {
@@ -111,5 +111,27 @@ test('too large photo is rejected', async () => {
   const res = await fetch(`${base}/api/items/${created.json.id}/photo`, { method: 'POST', headers: { 'x-profile': 'nasta' }, body: big }).catch(() => null);
   // Either a clean 413, or the server cut the connection mid-upload; both mean it was refused.
   assert.ok(res === null || res.status === 413);
+  server.close();
+});
+
+test('link autofill: extract, then item is saved with its own copy of the photo', async () => {
+  // image host swapped for an IP literal so the test needs no DNS
+  const html = Buffer.from(readFileSync(new URL('./fixtures/zalando-bag.html', import.meta.url), 'utf8').replace('https://img01.ztat.net', 'https://8.8.4.4'));
+  const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(50)]);
+  const fakeFetch = async (u) => {
+    const isImg = String(u).includes('.jpg');
+    return new Response(isImg ? jpg : html, { status: 200, headers: { 'content-type': isImg ? 'image/jpeg' : 'text/html' } });
+  };
+  const { server, call } = await start(fakeFetch);
+  const x = await call('POST', '/api/extract', 'nasta', { url: 'https://8.8.8.8/zalando-bag.html' });
+  assert.equal(x.status, 200);
+  assert.equal(x.json.price, 12660);
+  assert.equal(x.json.brand, 'Tory Burch');
+  const created = await call('POST', '/api/items', 'nasta', { name: x.json.name, image_url: x.json.image_url, sources: [{ shop: 'Zalando', price: x.json.price }] });
+  assert.match(created.json.image_url, /^\/uploads\/[a-f0-9]{32}\.jpg$/);
+  const bad = await call('POST', '/api/extract', 'nasta', { url: 'http://127.0.0.1/' });
+  assert.equal(bad.status, 400);
+  const evil = await call('POST', '/api/items', 'nasta', { name: 'x', image_url: 'http://127.0.0.1/secret.jpg' });
+  assert.equal(evil.json.image_url, null);
   server.close();
 });

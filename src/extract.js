@@ -38,13 +38,13 @@ export function metaTags(html) {
   return out;
 }
 
-function jsonLdProducts(html) {
+function firstJsonLd(html, type) {
   const found = [];
   const walk = (n) => {
     if (!n || typeof n !== 'object') return;
     if (Array.isArray(n)) return n.forEach(walk);
     const t = [].concat(n['@type'] ?? []);
-    if (t.includes('Product')) found.push(n);
+    if (t.includes(type)) found.push(n);
     if (n['@graph']) walk(n['@graph']);
   };
   for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
@@ -53,20 +53,38 @@ function jsonLdProducts(html) {
   return found[0] || null;
 }
 
+const inStock = (variant) => ![].concat(variant.offers ?? []).some((o) => /OutOfStock|SoldOut|Discontinued/i.test(o?.availability || ''));
+const tidySize = (s) => {
+  const t = decode(s?.name ?? s).replace(/\s+/g, ' ');
+  return /^one ?size$/i.test(t) ? 'One Size' : t;
+};
+
+// Zalando lists one variant per size in a ProductGroup; Answear gives Product.size. Returns "S, M" like the form field.
+function readSizes(product, group) {
+  const raw = group?.hasVariant
+    ? [].concat(group.hasVariant).filter(inStock).flatMap((v) => v.size ?? [])
+    : [].concat(product?.size ?? []);
+  const sizes = [...new Set(raw.map(tidySize).filter(Boolean))];
+  return sizes.length ? sizes.join(', ') : null;
+}
+
 const CURRENCY_BY_SYMBOL = [[/Kč|CZK/i, 'CZK'], [/€|EUR/i, 'EUR'], [/zł|PLN/i, 'PLN'], [/£|GBP/i, 'GBP'], [/\$|USD/i, 'USD']];
 const currencyOf = (text) => CURRENCY_BY_SYMBOL.find(([re]) => re.test(text || ''))?.[1] ?? null;
 
 export function parseProductHtml(html, pageUrl = '') {
   const meta = metaTags(html);
-  const ld = jsonLdProducts(html);
-  const r = { name: null, brand: null, color: null, price: null, currency: null, image_url: null, sizes: null };
+  const ld = firstJsonLd(html, 'Product');
+  const r = { name: null, brand: null, color: null, price: null, currency: null, image_url: null, sizes: readSizes(ld, firstJsonLd(html, 'ProductGroup')) };
 
   if (ld) {
     r.name = ld.name ? decode(ld.name) : null;
+    // Answear appends colour and code to the name and repeats them in alternateName: "… Bunny Knot  hnědá 187633".
+    const alt = typeof ld.alternateName === 'string' ? decode(ld.alternateName) : '';
+    if (alt && r.name?.length > alt.length && r.name.endsWith(alt)) r.name = r.name.slice(0, -alt.length).trim();
     r.brand = decode(ld.brand?.name ?? (typeof ld.brand === 'string' ? ld.brand : '')) || null;
     r.color = ld.color ? decode(ld.color) : null;
     const img = [].concat(ld.image ?? [])[0];
-    r.image_url = typeof img === 'string' ? img : img?.url ?? null;
+    r.image_url = typeof img === 'string' ? img : img?.url ?? img?.contentUrl ?? null;
     const offer = [].concat(ld.offers ?? [])[0];
     if (offer) {
       r.price = parsePrice(offer.price ?? offer.lowPrice);
@@ -88,8 +106,7 @@ export function parseProductHtml(html, pageUrl = '') {
   if (!r.image_url && meta['og:image'] && !/logo|share\./i.test(meta['og:image'])) r.image_url = meta['og:image'];
 
   // Title: "Tory Burch ELEANOR SLIM SHOULDER BAG - Kabelka - albarossa/bordeaux - Zalando.cz"
-  let title = r.name || meta['og:title'] || /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1] || '';
-  title = decode(title);
+  let title = decode(meta['og:title'] || /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1] || '');
   // Answear style: "Brand product name, barva hnědá | ANSWEAR.cz"
   const bm = /,\s*(?:barva|color|colour)\s+([^|,]+?)\s*(?:\||$)/i.exec(title);
   if (bm) { r.color ||= bm[1].trim(); title = title.replace(bm[0], ' |'); }
@@ -111,7 +128,12 @@ export function parseProductHtml(html, pageUrl = '') {
     const i = first.toUpperCase().indexOf(r.name.toUpperCase());
     if (i > 0) r.brand = first.slice(0, i).trim();
   }
-  if (r.brand && r.name.toLowerCase().startsWith(r.brand.toLowerCase() + ' ')) r.name = r.name.slice(r.brand.length).trim();
+  if (r.brand && r.name?.toLowerCase().startsWith(r.brand.toLowerCase() + ' ')) {
+    // Answear's brand field is all lowercase ("tory burch"); the name has the real spelling.
+    if (r.brand === r.brand.toLowerCase()) r.brand = r.name.slice(0, r.brand.length);
+    const rest = r.name.slice(r.brand.length).trim();
+    r.name = rest.charAt(0).toUpperCase() + rest.slice(1);
+  }
 
   try { if (r.image_url) r.image_url = new URL(r.image_url, pageUrl).href; } catch { r.image_url = null; }
   if (r.image_url && !/^https?:/.test(r.image_url)) r.image_url = null;

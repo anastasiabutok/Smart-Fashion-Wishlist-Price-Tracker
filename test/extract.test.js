@@ -57,3 +57,41 @@ test('Answear-style title: colour split off, logo image ignored', () => {
   assert.equal(r.name, 'Tory Burch kabelka přes rameno dámská kožená Bunny Knot');
   assert.equal(r.image_url, null);
 });
+
+const fixture = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
+
+test('reads a real Answear page: JSON-LD photo, colour from title, clean name and brand, sizes', () => {
+  const r = parseProductHtml(fixture('answear-bag.html'), 'https://answear.cz/p/x');
+  assert.equal(r.name, 'Kabelka přes rameno dámská kožená Bunny Knot');
+  assert.equal(r.brand, 'Tory Burch');
+  assert.equal(r.color, 'hnědá');
+  assert.equal(r.price, 13990);
+  assert.equal(r.currency, 'CZK');
+  assert.equal(r.image_url, 'https://img2.ans-media.com/i/700x1050/AW26-TODYPW-89X_F1.avif?v=1791476378');
+  assert.equal(r.sizes, 'One Size');
+});
+
+test('reads a real Zalando page: tag fields stay correct and sizes come from the ProductGroup', () => {
+  const r = parseProductHtml(fixture('zalando-product-group.html'), 'https://www.zalando.cz/x.html');
+  assert.equal(r.name, 'ELEANOR SLIM SHOULDER BAG');
+  assert.equal(r.brand, 'Tory Burch');
+  assert.equal(r.color, 'albarossa');
+  assert.equal(r.price, 12660);
+  assert.match(r.image_url, /imwidth=800/);
+  assert.equal(r.sizes, 'One Size');
+});
+
+test('sizes: sold-out variants are left out, duplicates merged, none means null', () => {
+  const page = (ld) => `<script type="application/ld+json">${JSON.stringify(ld)}</script>`;
+  const variant = (size, availability) => ({ '@type': 'Product', size, offers: { availability: `https://schema.org/${availability}` } });
+  const group = (...hasVariant) => page({ '@type': 'ProductGroup', hasVariant });
+  assert.equal(parseProductHtml(group(variant('S', 'InStock'), variant('M', 'OutOfStock'), variant('L', 'InStock'), variant('L', 'InStock'))).sizes, 'S, L');
+  assert.equal(parseProductHtml(group(variant('S', 'OutOfStock'))).sizes, null);
+  assert.equal(parseProductHtml(page({ '@type': 'Product', name: 'Coat', size: ['36', '38'] })).sizes, '36, 38');
+  assert.equal(parseProductHtml(page({ '@type': 'Product', name: 'Coat' })).sizes, null);
+});
+
+test('a JSON-LD brand with no name in the page does not crash', () => {
+  const html = '<script type="application/ld+json">{"@type":"Product","brand":{"name":"Acme"}}</script>';
+  assert.equal(parseProductHtml(html).brand, 'Acme');
+});

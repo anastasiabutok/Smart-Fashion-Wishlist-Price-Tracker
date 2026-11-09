@@ -21,18 +21,25 @@ $('go').onclick = async () => {
   });
   const urls = productLinks(hrefs, tab.url);
   if (!urls.length) { out.textContent = 'No products found on this page. Open the wishlist or a list of products in a supported shop.'; return; }
-  out.textContent = `Found ${urls.length} products. Importing, this can take a minute…`;
   try {
     const all = [];
-    for (let i = 0; i < urls.length; i += 20) {
+    let rateLimited = false;
+    for (let i = 0; i < urls.length && !rateLimited; i += 20) {
+      out.textContent = `Found ${urls.length} products. Importing slowly so the shop does not block it: ${i} done so far. Keep this window open.`;
       const res = await fetch(`${app}/api/import`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-profile': profile }, body: JSON.stringify({ urls: urls.slice(i, i + 20) }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Import failed');
       all.push(...data.results);
+      rateLimited = Boolean(data.rate_limited);
     }
     const n = (s) => all.filter((r) => r.status === s).length;
     const noPrice = all.filter((r) => r.status === 'added' && r.price == null).length;
-    out.textContent = `Added ${n('added')}, already there ${n('already in your list')}, failed ${n('failed')}.` + (noPrice ? `\n${noPrice} added without a price (enter it in the app).` : '');
+    const notTried = n('not tried') + urls.length - all.length;
+    const firstError = all.find((r) => r.status === 'failed')?.error;
+    out.textContent = `Added ${n('added')}, already there ${n('already in your list')}, failed ${n('failed')}, not tried ${notTried}.`
+      + (noPrice ? `\n${noPrice} added without a price (enter it in the app).` : '')
+      + (firstError ? `\nFirst failure: ${firstError}.` : '')
+      + (rateLimited ? '\nThe shop asked the app to slow down, so it stopped. Wait a while, then click Send again: products already added are skipped.' : '');
   } catch (e) {
     out.textContent = `Could not reach the app (${e.message}). Is it running?`;
   }

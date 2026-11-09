@@ -35,7 +35,10 @@ export function sniffImage(buf) {
 const GATED = new Set(['zalando lounge', 'bestsecret']);
 export const shopType = (shop) => (GATED.has(String(shop).toLowerCase()) ? 'gated' : 'public');
 
-export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'uploads', fetchFn } = {}) {
+// Shops refuse requests that come too fast (Zalando after about 10 quick page reads).
+const IMPORT_DELAY_MS = 3000;
+
+export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'uploads', fetchFn, importDelayMs = IMPORT_DELAY_MS } = {}) {
   const readRaw = async (req) => {
     const chunks = [];
     let size = 0;
@@ -99,9 +102,13 @@ export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'upload
           const urls = [...new Set((Array.isArray(b.urls) ? b.urls : []).map((u) => String(u).trim()).filter((u) => /^https?:\/\//i.test(u)))].slice(0, 60);
           if (!urls.length) return send(res, 400, { error: 'No links to import' });
           const results = [];
-          for (const link of urls) {
+          let readAPage = false;
+          let rateLimited = false;
+          for (const [index, link] of urls.entries()) {
             try {
               if (store.hasSourceUrl(profile, link)) { results.push({ url: link, status: 'already in your list' }); continue; }
+              if (readAPage) await new Promise((done) => setTimeout(done, importDelayMs));
+              readAPage = true;
               const r = await extractFromUrl(link, { fetchFn });
               if (!r.name) throw new Error('no product found on the page');
               const shop = r.shop || 'Other';
@@ -110,10 +117,16 @@ export function createApp(store, { uploadDir = process.env.UPLOAD_DIR || 'upload
               store.addSource(itemId, { shop, shop_type: shopType(shop), url: r.url, price: r.price });
               results.push({ url: link, status: 'added', id: itemId, name: r.name, price: r.price });
             } catch (e) {
+              if (e.shopStatus === 429) {
+                // The shop said "too many requests": stop asking. Sending the list again later continues from here.
+                rateLimited = true;
+                results.push(...urls.slice(index).map((url) => ({ url, status: 'not tried' })));
+                break;
+              }
               results.push({ url: link, status: 'failed', error: e.message || String(e) });
             }
           }
-          return send(res, 200, { results });
+          return send(res, 200, { results, rate_limited: rateLimited });
         }
 
         if (kind === 'extract' && method === 'POST') {

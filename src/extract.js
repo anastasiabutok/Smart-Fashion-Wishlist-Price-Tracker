@@ -191,7 +191,7 @@ async function safeGet(rawUrl, { maxBytes, accept, timeoutMs = 10000 }, fetchFn 
       url = new URL(res.headers.get('location'), url);
       continue;
     }
-    if (!res.ok) throw Object.assign(new Error(`The shop answered with status ${res.status}`), { status: 502 });
+    if (!res.ok) throw Object.assign(new Error(`The shop answered with status ${res.status}`), { status: 502, shopStatus: res.status });
     const chunks = [];
     let size = 0;
     for await (const c of res.body) {

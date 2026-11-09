@@ -84,11 +84,15 @@ export function parseProductHtml(html, pageUrl = '') {
     if (m) { r.price = parsePrice(m[1]); r.currency ||= currencyOf(m[1]); }
   }
   r.color ||= meta['twitter:label2']?.match(/barv|colou?r|farbe/i) ? meta['twitter:data2'] || null : null;
-  r.image_url ||= meta['og:image'] || null;
+  // Some shops put their logo in og:image; that is not the product photo.
+  if (!r.image_url && meta['og:image'] && !/logo|share\./i.test(meta['og:image'])) r.image_url = meta['og:image'];
 
   // Title: "Tory Burch ELEANOR SLIM SHOULDER BAG - Kabelka - albarossa/bordeaux - Zalando.cz"
   let title = r.name || meta['og:title'] || /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1] || '';
   title = decode(title);
+  // Answear style: "Brand product name, barva hnědá | ANSWEAR.cz"
+  const bm = /,\s*(?:barva|color|colour)\s+([^|,]+?)\s*(?:\||$)/i.exec(title);
+  if (bm) { r.color ||= bm[1].trim(); title = title.replace(bm[0], ' |'); }
   if (!r.name && title) {
     const parts = title.split(/\s+[-–|]\s+/).map((p) => p.trim()).filter(Boolean);
     // Drop trailing shop name (contains a dot, e.g. Zalando.cz) and the colour part

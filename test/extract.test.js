@@ -49,3 +49,11 @@ test('shop names from host', () => {
   assert.equal(shopFromHost('www.aboutyou.cz'), 'AboutYou');
   assert.equal(shopFromHost('example.com'), null);
 });
+
+test('Answear-style title: colour split off, logo image ignored', () => {
+  const html = '<meta property="og:title" content="Tory Burch kabelka přes rameno dámská kožená Bunny Knot, barva hnědá | ANSWEAR.cz"><meta property="og:image" content="https://cdn.x/logo_share.ans.png">';
+  const r = parseProductHtml(html, 'https://answear.cz/p/x');
+  assert.equal(r.color, 'hnědá');
+  assert.equal(r.name, 'Tory Burch kabelka přes rameno dámská kožená Bunny Knot');
+  assert.equal(r.image_url, null);
+});
